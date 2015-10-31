@@ -91,7 +91,7 @@ public class Main {
         ApkDecoder decoder = new ApkDecoder();
         decoder.setForceDelete(true);
         try {
-        	final short DECODE_SOURCES_NONE = 0x0000;
+            final short DECODE_SOURCES_NONE = 0x0000;
             decoder.setDecodeSources(DECODE_SOURCES_NONE);
         } catch (AndrolibException e) {
             e.printStackTrace();
@@ -411,7 +411,6 @@ public class Main {
         for (String k : keyFiles) {
             File kf = new File(workingDir(), k);
             if (!kf.exists()) {
-                
                 try (InputStream in = Main.class.getResourceAsStream("/"
                         + Main.class.getPackage().getName() + "/" + k)) {
                     try (OutputStream out = new FileOutputStream(kf)) {
@@ -430,7 +429,7 @@ public class Main {
         parser.open(fis);
         StringBuilder indent = new StringBuilder(10);
         StringBuilder result = new StringBuilder(4096);
-        final String indentStep = "	";
+        final String indentStep = "\t";
         while (true) {
             int type = parser.next();
             if (type == XmlPullParser.END_DOCUMENT) {
@@ -571,16 +570,16 @@ class IntTextField extends JTextField {
 
         @Override
         public void insertString(int offs, String str, AttributeSet a) throws BadLocationException {
-            if (str == null) {
-                return;
+            int len = str.length(), p = 0;
+            char[] sb = new char[len];
+            for (int i = 0; i < len; i++) {
+                char c = str.charAt(i);
+                if (c >= '0' && c <= '9') {
+                    sb[p++] = c;
+                }
             }
-            String oldString = getText(0, getLength());
-            String newString = oldString.substring(0, offs) + str + oldString.substring(offs);
-            try {
-                Integer.parseInt(newString + "0");
-                super.insertString(offs, str, a);
-            } catch (NumberFormatException e) {
-            }
+            str = p == 0 ? "0" : new String(sb, 0, p);
+            super.insertString(offs, str, a);
         }
     }
 }
