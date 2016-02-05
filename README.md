@@ -8,7 +8,6 @@ https://github.com/testwhat/PackageRenamer/blob/master/bin/PackageRenamer.zip?ra
 
 Reference libraries:  
 http://ibotpeaches.github.io/Apktool/  
-https://code.google.com/p/android4me/  
 https://github.com/android/platform_build/blob/e691373514d/tools/signapk/SignApk.java  
 
 Screenshot:  

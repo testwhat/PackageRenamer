@@ -32,11 +32,15 @@ import java.awt.dnd.DropTargetEvent;
 import java.awt.dnd.DropTargetListener;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.im.InputContext;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PrintStream;
+import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.Charset;
@@ -46,7 +50,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.StringTokenizer;
-import java.util.zip.ZipEntry;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.zip.ZipFile;
 
 import javax.swing.JDesktopPane;
@@ -67,24 +72,86 @@ import javax.swing.text.Document;
 import javax.swing.text.PlainDocument;
 
 import org.apache.commons.io.IOUtils;
-import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlPullParserException;
 
-import android.content.res.AXmlResourceParser;
-import android.util.TypedValue;
 import brut.androlib.Androlib;
 import brut.androlib.AndrolibException;
 import brut.androlib.ApkDecoder;
 import brut.androlib.ApkOptions;
+import brut.androlib.res.data.ResPackage;
+import brut.androlib.res.data.ResTable;
+import brut.androlib.res.decoder.AXmlResourceParser;
+import brut.androlib.res.decoder.ResAttrDecoder;
+import brut.androlib.res.decoder.XmlPullStreamDecoder;
+import brut.androlib.res.util.ExtFile;
+import brut.androlib.res.util.ExtMXSerializer;
 import brut.common.BrutException;
 import brut.directory.DirectoryException;
 
 import com.android.signapk.SignApk;
 
 public class Main {
+    static final String WORKING_DIR = System.getProperty("user.dir");
 
     public static void main(String[] args) {
         new UI().show();
+    }
+
+    static class LiteApkDecoder {
+        final Androlib androlib;
+        final ExtFile mApkFile;
+        ResTable mResTable;
+
+        LiteApkDecoder(File apkFile, String frameworkPath) {
+            ApkOptions apkOptions = new ApkOptions();
+            apkOptions.frameworkFolderLocation = frameworkPath;
+            androlib = new Androlib(apkOptions);
+            mApkFile = new ExtFile(apkFile);
+            try {
+                mResTable = androlib.getResTable(mApkFile, true);
+            } catch (AndrolibException e) {
+                e.printStackTrace();
+                mResTable = new ResTable();
+            }
+        }
+
+        String getManifest(boolean decodeResource) {
+            AXmlResourceParser axmlParser = new AXmlResourceParser();
+            ResAttrDecoder resDecoder = new ResAttrDecoder();
+
+            final Logger logger = Logger.getLogger(AXmlResourceParser.class.getName());
+            final Level origLevel = logger.getLevel();
+            final ResTable resTable;
+            if (decodeResource) {
+                resTable = mResTable;
+            } else {
+                resTable = new ResTable();
+                logger.setLevel(Level.OFF);
+            }
+
+            resDecoder.setCurrentPackage(new ResPackage(resTable, 0, null));
+            axmlParser.setAttrDecoder(resDecoder);
+            final String encoding = "utf-8";
+            ExtMXSerializer serial = new ExtMXSerializer();
+            serial.setProperty(
+                    "http://xmlpull.org/v1/doc/properties.html#serializer-indentation",
+                    "    ");
+            serial.setProperty(
+                    "http://xmlpull.org/v1/doc/properties.html#serializer-line-separator",
+                    System.getProperty("line.separator"));
+            serial.setProperty("DEFAULT_ENCODING", encoding);
+            serial.setDisabledAttrEscape(true);
+
+            ByteArrayOutputStream os = new ByteArrayOutputStream();
+            try {
+                PrintStream ps = new PrintStream(os, true, encoding);
+                XmlPullStreamDecoder xmlDecoder = new XmlPullStreamDecoder(axmlParser, serial);
+                xmlDecoder.decode(mApkFile.getDirectory().getFileInput("AndroidManifest.xml"), ps);
+            } catch (AndrolibException | DirectoryException | UnsupportedEncodingException e) {
+                e.printStackTrace();
+            }
+            logger.setLevel(origLevel);
+            return os.toString();
+        }
     }
 
     static File unpack(String apkName) {
@@ -109,7 +176,7 @@ public class Main {
             e.printStackTrace();
             return null;
         }
-        decoder.setFrameworkDir(workingDir());
+        decoder.setFrameworkDir(WORKING_DIR);
         decoder.setApkFile(new File(apkName));
         try {
             decoder.decode();
@@ -155,10 +222,6 @@ public class Main {
             e.printStackTrace();
         }
         return new File(new File(outDir, "dist"), originalApk.getName());
-    }
-
-    public static String workingDir() {
-        return System.getProperty("user.dir");
     }
 
     public static String path(String... path) {
@@ -355,17 +418,13 @@ public class Main {
         }
 
         void processApk(final File file) {
-            String content = null;
+            boolean foundManifest = false;
             try (ZipFile zip = new ZipFile(file)) {
-                ZipEntry mft = zip.getEntry("AndroidManifest.xml");
-                try (InputStream is = zip.getInputStream(mft)) {
-                    content = Main.parse(is);
-                    //System.out.println(result);
-                }
+                foundManifest = zip.getEntry("AndroidManifest.xml") != null;
             } catch (Exception e) {
                 e.printStackTrace();
             }
-            if (content == null) {
+            if (!foundManifest) {
                 appendInfo("Not valid input file. [無法識別輸入檔案] " + file);
                 return;
             }
@@ -391,8 +450,8 @@ public class Main {
                 if (distApk.exists()) {
                     String finalOutput = appendTail(file, "_m" + i).getAbsolutePath();
                     SignApk.main(new String[] {
-                            path(workingDir(), "testkey.x509.pem"),
-                            path(workingDir(), "testkey.pk8"),
+                            path(WORKING_DIR, "testkey.x509.pem"),
+                            path(WORKING_DIR, "testkey.pk8"),
                             distApk.getAbsolutePath(),
                             finalOutput
                     });
@@ -409,7 +468,7 @@ public class Main {
     static void prepareKey() {
         final String[] keyFiles = { "testkey.x509.pem", "testkey.pk8" };
         for (String k : keyFiles) {
-            File kf = new File(workingDir(), k);
+            File kf = new File(WORKING_DIR, k);
             if (!kf.exists()) {
                 try (InputStream in = Main.class.getResourceAsStream("/"
                         + Main.class.getPackage().getName() + "/" + k)) {
@@ -422,130 +481,25 @@ public class Main {
             }
         }
     }
-
-    public static String parse(InputStream fis) throws XmlPullParserException,
-            IOException {
-        AXmlResourceParser parser = new AXmlResourceParser();
-        parser.open(fis);
-        StringBuilder indent = new StringBuilder(10);
-        StringBuilder result = new StringBuilder(4096);
-        final String indentStep = "\t";
-        while (true) {
-            int type = parser.next();
-            if (type == XmlPullParser.END_DOCUMENT) {
-                break;
-            }
-            switch (type) {
-            case XmlPullParser.START_DOCUMENT:
-                result.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>").append("\n");
-                break;
-            case XmlPullParser.START_TAG:
-                result.append(String.format("%s<%s%s", indent,
-                        getNamespacePrefix(parser.getPrefix()), parser.getName()));
-                indent.append(indentStep);
-
-                int namespaceCountBefore = parser.getNamespaceCount(parser.getDepth() - 1);
-                int namespaceCount = parser.getNamespaceCount(parser.getDepth());
-                int attrCount = parser.getAttributeCount();
-                if (attrCount == 0 && namespaceCountBefore == namespaceCount) {
-                    result.append(">\n");
-                    break;
-                } else {
-                    result.append("\n");
-                }
-                for (int i = namespaceCountBefore; i != namespaceCount; ++i) {
-                    String xmlns = String.format("%sxmlns:%s=\"%s\"", indent,
-                            parser.getNamespacePrefix(i), parser.getNamespaceUri(i));
-                    result.append(xmlns).append("\n");
-                }
-                for (int i = 0; i < attrCount; ++i) {
-                    String attr = String.format("%s%s%s=\"%s\"", indent,
-                            getNamespacePrefix(parser.getAttributePrefix(i)),
-                            parser.getAttributeName(i), getAttributeValue(parser, i));
-                    result.append(attr).append(i == (attrCount - 1) ? ">\n" : "\n");
-                }
-                break;
-            case XmlPullParser.END_TAG:
-                indent.setLength(indent.length() - indentStep.length());
-                String end = String.format("%s</%s%s>", indent,
-                        getNamespacePrefix(parser.getPrefix()), parser.getName());
-                result.append(end).append("\n");
-                break;
-            case XmlPullParser.TEXT:
-                result.append(String.format("%s%s", indent, parser.getText())).append("\n");
-                break;
-            }
-        }
-        return result.toString();
-    }
-
-    private static String getNamespacePrefix(String prefix) {
-        if (prefix == null || prefix.length() == 0) {
-            return "";
-        }
-        return prefix + ":";
-    }
-
-    private static String getAttributeValue(AXmlResourceParser parser, int index) {
-        int type = parser.getAttributeValueType(index);
-        int data = parser.getAttributeValueData(index);
-        if (type == TypedValue.TYPE_STRING) {
-            return parser.getAttributeValue(index);
-        }
-        if (type == TypedValue.TYPE_ATTRIBUTE) {
-            return String.format("?%s%08X", getPackage(data), data);
-        }
-        if (type == TypedValue.TYPE_REFERENCE) {
-            return String.format("@%s%08X", getPackage(data), data);
-        }
-        if (type == TypedValue.TYPE_FLOAT) {
-            return String.valueOf(Float.intBitsToFloat(data));
-        }
-        if (type == TypedValue.TYPE_INT_HEX) {
-            return String.format("0x%08X", data);
-        }
-        if (type == TypedValue.TYPE_INT_BOOLEAN) {
-            return data != 0 ? "true" : "false";
-        }
-        if (type == TypedValue.TYPE_DIMENSION) {
-            return Float.toString(complexToFloat(data))
-                    + DIMENSION_UNITS[data & TypedValue.COMPLEX_UNIT_MASK];
-        }
-        if (type == TypedValue.TYPE_FRACTION) {
-            return Float.toString(complexToFloat(data))
-                    + FRACTION_UNITS[data & TypedValue.COMPLEX_UNIT_MASK];
-        }
-        if (type >= TypedValue.TYPE_FIRST_COLOR_INT && type <= TypedValue.TYPE_LAST_COLOR_INT) {
-            return String.format("#%08X", data);
-        }
-        if (type >= TypedValue.TYPE_FIRST_INT && type <= TypedValue.TYPE_LAST_INT) {
-            return String.valueOf(data);
-        }
-        return String.format("<0x%X, type 0x%02X>", data, type);
-    }
-
-    private static String getPackage(int id) {
-        return (id >>> 24 == 1) ? "android:" : "";
-    }
-
-    public static float complexToFloat(int complex) {
-        return (float) (complex & 0xFFFFFF00) * RADIX_MULTS[(complex >> 4) & 3];
-    }
-
-    private static final float RADIX_MULTS[] = { 0.00390625F, 3.051758E-005F, 1.192093E-007F, 4.656613E-010F };
-    private static final String DIMENSION_UNITS[] = { "px", "dip", "sp", "pt", "in", "mm", "", "" };
-    private static final String FRACTION_UNITS[] = { "%", "%p", "", "", "", "", "", "" };
 }
 
 class IntTextField extends JTextField {
+    InputContext mInputContext;
 
-    public IntTextField(int size) {
+    IntTextField(int size) {
         super("", size);
+        mInputContext = InputContext.getInstance();
+        mInputContext.selectInputMethod(java.util.Locale.ENGLISH);
     }
 
     @Override
     protected Document createDefaultModel() {
         return new IntTextDocument();
+    }
+
+    @Override
+    public InputContext getInputContext() {
+        return mInputContext;
     }
 
     @Override
@@ -558,7 +512,7 @@ class IntTextField extends JTextField {
         }
     }
 
-    public int getValue() {
+    int getValue() {
         try {
             return Integer.parseInt(getText());
         } catch (NumberFormatException e) {
@@ -578,7 +532,7 @@ class IntTextField extends JTextField {
                     sb[p++] = c;
                 }
             }
-            str = p == 0 ? "0" : new String(sb, 0, p);
+            str = p == 0 ? "" : new String(sb, 0, p);
             super.insertString(offs, str, a);
         }
     }
